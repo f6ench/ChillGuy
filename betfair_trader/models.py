@@ -14,6 +14,7 @@ class Signal(str, Enum):
     DRIFTER = "drifter"
     SCALP = "scalp"
     DOB = "dob"
+    MARKET_MAKE = "market_make"
 
 
 class Strategy(str, Enum):
@@ -21,6 +22,7 @@ class Strategy(str, Enum):
     LAY_TO_BACK = "lay_to_back"
     SCALPING = "scalping"
     DOBBING = "dobbing"
+    MARKET_MAKING = "market_making"
 
 
 class Confidence(str, Enum):

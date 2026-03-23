@@ -31,12 +31,16 @@ from betfair_trader.models import (
     TradeRecord,
 )
 from betfair_trader.outcome.outcome_logger import BetRecord, OutcomeLogger, SignalSnapshot
+from betfair_trader.signals.kyle_lambda import KyleLambdaEstimator
+from betfair_trader.signals.hawkes_flow import HawkesFlowEstimator
 from betfair_trader.signals.steam_detector import SteamDetector
+from betfair_trader.signals.vpin import VPINCalculator
 from betfair_trader.storage import TradeLogger
 from betfair_trader.strategies.back_to_lay import BackToLayStrategy
 from betfair_trader.strategies.base import BaseStrategy
 from betfair_trader.strategies.dobbing import DobbingStrategy
 from betfair_trader.strategies.lay_to_back import LayToBackStrategy
+from betfair_trader.strategies.market_making import AvellanedaStoikovStrategy
 from betfair_trader.strategies.scalping import ScalpingStrategy
 from betfair_trader.streaming import MarketStream
 from betfair_trader.utils.hedge import (
@@ -64,6 +68,11 @@ class TradingEngine:
             drift_threshold=config.drift_threshold,
             volume_threshold=config.volume_threshold,
         )
+
+        # Quant signal estimators (Kyle's lambda, Hawkes, VPIN)
+        self.kyle_estimator = KyleLambdaEstimator(window_size=200)
+        self.hawkes_estimator = HawkesFlowEstimator(max_events=1000, n_starts=5)
+        self.vpin_calculator = VPINCalculator(bucket_size=50, n_buckets=10)
 
         # Race selection filter
         self.race_selector = RaceSelector(RaceFilterConfig(
@@ -96,6 +105,7 @@ class TradingEngine:
             Strategy.DOBBING: DobbingStrategy(config),
             Strategy.LAY_TO_BACK: LayToBackStrategy(config),
             Strategy.BACK_TO_LAY: BackToLayStrategy(config),
+            Strategy.MARKET_MAKING: AvellanedaStoikovStrategy(config),
         }
         self._active_trades: dict[str, TradeRecord] = {}
         self._running = False
@@ -221,15 +231,50 @@ class TradingEngine:
 
         logger.info("Processing market: %s (%s) — passed filters", market_name, market_id)
 
-        # ── Record prices for steam/drift detection ────────────────────
+        # ── Record prices and trades for all signal estimators ─────────
         runner_names = {r["id"]: r["name"] for r in market.get("runners", [])}
+        now = time.time()
         for snap in snapshots:
             if snap.last_traded_price > 0:
                 self.steam_detector.record_price(
                     market_id, snap.selection_id,
                     snap.last_traded_price, snap.total_matched,
                 )
+                # Feed Kyle's lambda estimator
+                is_buy = snap.best_back > 0 and snap.last_traded_price >= snap.best_back
+                self.kyle_estimator.record_trade(
+                    market_id, snap.last_traded_price, snap.total_matched, is_buy, now,
+                )
+                # Feed Hawkes process estimator
+                self.hawkes_estimator.record_event(market_id, now)
+                # Feed VPIN calculator
+                self.vpin_calculator.record_trade(
+                    market_id, snap.total_matched, is_buy, now,
+                )
         self.steam_detector.set_estimated_daily_volume(market_id, total_matched)
+
+        # ── Compute quant signals ──────────────────────────────────────
+        kyle_estimate = self.kyle_estimator.estimate(market_id)
+        hawkes_estimate = self.hawkes_estimator.estimate(market_id)
+        vpin_estimate = self.vpin_calculator.compute(market_id)
+
+        # VPIN safety check: if critical, skip this market entirely
+        if vpin_estimate.is_critical:
+            logger.warning(
+                "SKIPPING %s — VPIN critical (%.3f), informed money dominating",
+                market_name, vpin_estimate.vpin,
+            )
+            return
+
+        # Log quant signal state
+        if kyle_estimate.is_reliable or hawkes_estimate.is_reliable:
+            logger.info(
+                "Quant signals [%s]: %s | %s | %s",
+                market_name,
+                kyle_estimate.to_prompt_text() if kyle_estimate.is_reliable else "Lambda: N/A",
+                hawkes_estimate.to_prompt_text() if hawkes_estimate.is_reliable else "Hawkes: N/A",
+                vpin_estimate.to_prompt_text(),
+            )
 
         # ── Fetch form data (Racing API) ───────────────────────────────
         form_data_text = ""
@@ -238,11 +283,20 @@ class TradingEngine:
 
         # ── Get steam/drift signals ────────────────────────────────────
         steam_signals = self.steam_detector.get_signals(market_id, runner_names)
-        steam_text = ""
+        steam_text_lines = []
         if steam_signals:
-            steam_lines = [s.to_prompt_text() for s in steam_signals if s.movement.value != "STABLE"]
-            if steam_lines:
-                steam_text = "\n".join(steam_lines)
+            runner_lines = [s.to_prompt_text() for s in steam_signals if s.movement.value != "STABLE"]
+            if runner_lines:
+                steam_text_lines.extend(runner_lines)
+
+        # Append quant signal summaries
+        if kyle_estimate.is_reliable:
+            steam_text_lines.append(kyle_estimate.to_prompt_text())
+        if hawkes_estimate.is_reliable:
+            steam_text_lines.append(hawkes_estimate.to_prompt_text())
+        steam_text_lines.append(vpin_estimate.to_prompt_text())
+
+        steam_text = "\n".join(steam_text_lines) if steam_text_lines else ""
 
         # ── Get pre-race content signals ───────────────────────────────
         content_signals_text = ""
