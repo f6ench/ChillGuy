@@ -52,6 +52,7 @@ class TradeInstruction(BaseModel):
     min_profit: float = 0.0
     confidence: Confidence = Confidence.MEDIUM
     reasoning: str = ""
+    signals_used: list[str] = []  # which signals support this trade
 
     @property
     def ev(self) -> float:

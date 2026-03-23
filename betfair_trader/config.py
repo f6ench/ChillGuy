@@ -27,3 +27,20 @@ class BetfairConfig(BaseSettings):
     min_edge: float = Field(default=0.05, alias="MIN_EDGE")
     min_confidence: float = Field(default=0.6, alias="MIN_CONFIDENCE")
     scalp_ticks: int = Field(default=2, alias="SCALP_TICKS")
+
+    # Racing API (form data)
+    racing_api_key: str = Field(default="", alias="RACING_API_KEY")
+
+    # Race selection filters
+    filter_min_liquidity: float = Field(default=50000, alias="FILTER_MIN_LIQUIDITY")
+    filter_min_class: int = Field(default=1, alias="FILTER_MIN_CLASS")
+    filter_max_class: int = Field(default=4, alias="FILTER_MAX_CLASS")
+    filter_min_field: int = Field(default=6, alias="FILTER_MIN_FIELD")
+    filter_max_field: int = Field(default=16, alias="FILTER_MAX_FIELD")
+    filter_flat_only: bool = Field(default=True, alias="FILTER_FLAT_ONLY")
+    filter_exclude_maidens: bool = Field(default=True, alias="FILTER_EXCLUDE_MAIDENS")
+
+    # Steam detection thresholds
+    steam_threshold: float = Field(default=0.15, alias="STEAM_THRESHOLD")
+    drift_threshold: float = Field(default=-0.20, alias="DRIFT_THRESHOLD")
+    volume_threshold: float = Field(default=0.10, alias="VOLUME_THRESHOLD")
